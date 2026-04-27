@@ -59,7 +59,6 @@ void GpuHNSWBuilder::ensure_capacity(size_t n) {
 }
 
 void GpuHNSWBuilder::upload_vector(const Vector& vec, size_t idx) {
-  // Copy FP32 to temp buffer, convert to FP16 on device
   CUDA_CHECK(cudaMemcpyAsync(
     d_fp32_tmp_,
     vec.data(),
@@ -78,7 +77,6 @@ void GpuHNSWBuilder::upload_vector(const Vector& vec, size_t idx) {
 std::vector<float> GpuHNSWBuilder::compute_distances(
   const Vector& query, size_t n_vectors
 ) {
-  // Upload query
   CUDA_CHECK(cudaMemcpyAsync(
     d_fp32_tmp_,
     query.data(),
@@ -90,7 +88,6 @@ std::vector<float> GpuHNSWBuilder::compute_distances(
     d_fp32_tmp_, d_query_, static_cast<int>(dim_), stream_
   );
 
-  // Launch tiled distance kernel
   if (metric_ == MetricType::L2) {
     cuda::launch_tiled_l2_distance(
       d_query_, d_vectors_, d_distances_,
@@ -103,7 +100,6 @@ std::vector<float> GpuHNSWBuilder::compute_distances(
     );
   }
 
-  // Download distances
   std::vector<float> h_distances(n_vectors);
   CUDA_CHECK(cudaMemcpyAsync(
     h_distances.data(),
@@ -122,7 +118,7 @@ HNSWIndex GpuHNSWBuilder::build(const std::vector<Vector>& vectors) {
   for (const auto& v : vectors) {
     add(idx, v);
   }
-  return idx;
+  return std::move(idx);
 }
 
 NodeId GpuHNSWBuilder::add(HNSWIndex& idx, const Vector& vec) {
@@ -132,23 +128,16 @@ NodeId GpuHNSWBuilder::add(HNSWIndex& idx, const Vector& vec) {
 
   size_t current_size = idx.size();
 
-  // Use CPU path for first few inserts (not enough vectors to benefit from GPU)
+  // Use CPU path for first few inserts
   if (current_size < 32) {
     return idx.add(vec);
   }
 
   ensure_capacity(current_size + 1);
-
-  // Upload this new vector to device at position current_size
   upload_vector(vec, current_size);
+  compute_distances(vec, current_size);
 
-  // Compute distances from new vector to all existing vectors on GPU
-  std::vector<float> distances = compute_distances(vec, current_size);
-
-  // Use CPU HNSW logic with GPU distances
-  // We bypass idx.add() and use the distances directly
-  // For now: fall back to CPU add (full GPU construction in Phase 3b)
-  // The GPU distances are computed but the graph logic is CPU-side
+  // Graph logic remains on CPU — GPU distances used in Phase 3b
   return idx.add(vec);
 }
 

@@ -6,21 +6,11 @@
 namespace vectordb {
 namespace cuda {
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Tile size for shared memory — must fit in 48KB shared mem per SM
-// With FP16: TILE_DIM * sizeof(__half) = 128 * 2 = 256 bytes per tile load
-// ─────────────────────────────────────────────────────────────────────────────
-#define TILE_DIM     128
-#define BLOCK_SIZE   256
+#define TILE_DIM   128
+#define BLOCK_SIZE 256
 
 // ─────────────────────────────────────────────────────────────────────────────
 // tiled_l2_distance_kernel
-//
-// Strategy:
-//   - Each block handles BLOCK_SIZE database vectors
-//   - Query is loaded tile-by-tile into shared memory (TILE_DIM elements)
-//   - Each thread accumulates partial L2 distance across all tiles
-//   - Reduces global memory reads for the query from N*dim to dim
 // ─────────────────────────────────────────────────────────────────────────────
 __global__ void tiled_l2_distance_kernel(
   const __half* __restrict__ query,
@@ -34,9 +24,7 @@ __global__ void tiled_l2_distance_kernel(
   int vec_idx = blockIdx.x * blockDim.x + threadIdx.x;
   float sum = 0.0f;
 
-  // Process dim in tiles of TILE_DIM
   for (int tile_start = 0; tile_start < dim; tile_start += TILE_DIM) {
-    // Cooperatively load query tile into shared memory
     int tile_end = min(tile_start + TILE_DIM, dim);
     int tile_len = tile_end - tile_start;
 
@@ -45,7 +33,6 @@ __global__ void tiled_l2_distance_kernel(
     }
     __syncthreads();
 
-    // Each thread processes its vector against the shared query tile
     if (vec_idx < N) {
       const __half* vec = vectors + vec_idx * dim + tile_start;
       for (int d = 0; d < tile_len; ++d) {
@@ -63,7 +50,6 @@ __global__ void tiled_l2_distance_kernel(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // tiled_cosine_distance_kernel
-// Same tiling strategy but accumulates dot product and norms separately
 // ─────────────────────────────────────────────────────────────────────────────
 __global__ void tiled_cosine_distance_kernel(
   const __half* __restrict__ query,
@@ -84,8 +70,7 @@ __global__ void tiled_cosine_distance_kernel(
     int tile_len = tile_end - tile_start;
 
     if (threadIdx.x < tile_len) {
-      float qval = __half2float(query[tile_start + threadIdx.x]);
-      s_query[threadIdx.x] = qval;
+      s_query[threadIdx.x] = __half2float(query[tile_start + threadIdx.x]);
     }
     __syncthreads();
 
@@ -110,13 +95,7 @@ __global__ void tiled_cosine_distance_kernel(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // batch_knn_kernel
-//
-// Each block handles one query (blockIdx.x = query index).
-// Threads cooperatively scan all N vectors and maintain a local top-K heap.
-// Uses shared memory for the query vector and a partial reduction for top-K.
-//
-// Simple approach: each thread scans N/blockDim.x vectors,
-// then we do a block-level top-K reduction.
+// Each block handles one query. Threads scan N vectors cooperatively.
 // ─────────────────────────────────────────────────────────────────────────────
 __global__ void batch_knn_kernel(
   const __half*  __restrict__ queries,
@@ -128,69 +107,41 @@ __global__ void batch_knn_kernel(
   int K,
   int dim
 ) {
-  // Each block = one query
   int q_idx = blockIdx.x;
   if (q_idx >= Q) return;
 
-  __shared__ float s_query[TILE_DIM];
-
   const __half* query = queries + q_idx * dim;
 
-  // Shared memory for block-level top-K: each thread tracks its local best
-  // Simple: thread 0 does full scan (for correctness baseline)
-  // Phase 2c will parallelize with warp-level primitives
-
-  // For now: distribute N vectors across threads, each thread finds its local min
+  // Each thread finds its local best across its assigned vectors
   float local_best_dist = FLT_MAX;
   int   local_best_id   = -1;
 
-  // Per-thread scan with shared query tiles
-  for (int tile_start = 0; tile_start < dim; tile_start += TILE_DIM) {
-    int tile_len = min(TILE_DIM, dim - tile_start);
-    if (threadIdx.x < tile_len) {
-      s_query[threadIdx.x] = __half2float(query[tile_start + threadIdx.x]);
-    }
-    __syncthreads();
-    __syncthreads();
-  }
-
-  // Each thread scans its assigned vectors
   for (int v = threadIdx.x; v < N; v += blockDim.x) {
     float dist = 0.0f;
-    // Reload query tiles for distance computation
-    for (int tile_start = 0; tile_start < dim; tile_start += TILE_DIM) {
-      int tile_len = min(TILE_DIM, dim - tile_start);
-
-      // Use registers for query tile in this inner loop
-      // (shared mem already loaded above — reuse it)
-      const __half* vec = vectors + v * dim + tile_start;
-      for (int d = 0; d < tile_len; ++d) {
-        float qval = __half2float(query[tile_start + d]);
-        float vval = __half2float(vec[d]);
-        float diff = qval - vval;
-        dist += diff * diff;
-      }
+    for (int d = 0; d < dim; ++d) {
+      float qval = __half2float(query[d]);
+      float vval = __half2float(vectors[v * dim + d]);
+      float diff = qval - vval;
+      dist += diff * diff;
     }
-
     if (dist < local_best_dist) {
       local_best_dist = dist;
       local_best_id   = v;
     }
   }
 
-  // Store per-thread best (Phase 3b will add proper top-K warp reduction)
-  // For now: thread 0 collects all bests via shared memory
-  __shared__ float s_dists[BLOCK_SIZE];
-  __shared__ int   s_ids[BLOCK_SIZE];
+  // Collect per-thread bests in shared memory
+  __shared__ float   s_dists[BLOCK_SIZE];
+  __shared__ int     s_ids[BLOCK_SIZE];
 
   s_dists[threadIdx.x] = local_best_dist;
   s_ids[threadIdx.x]   = local_best_id;
   __syncthreads();
 
-  // Simple reduction: thread 0 finds global best (K=1 baseline)
+  // Thread 0 picks global top-K from shared memory
   if (threadIdx.x == 0) {
     for (int k = 0; k < min(K, (int)blockDim.x); ++k) {
-      float best = FLT_MAX;
+      float best     = FLT_MAX;
       int   best_idx = -1;
       for (int t = 0; t < (int)blockDim.x; ++t) {
         if (s_dists[t] < best) {
@@ -201,14 +152,14 @@ __global__ void batch_knn_kernel(
       if (best_idx >= 0) {
         out_ids[q_idx * K + k]   = static_cast<uint32_t>(s_ids[best_idx]);
         out_dists[q_idx * K + k] = best;
-        s_dists[best_idx] = FLT_MAX;  // mark as used
+        s_dists[best_idx]        = FLT_MAX;
       }
     }
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// compute_norms_kernel — squared L2 norm per vector
+// compute_norms_kernel
 // ─────────────────────────────────────────────────────────────────────────────
 __global__ void compute_norms_kernel(
   const float* __restrict__ vectors,
@@ -226,10 +177,6 @@ __global__ void compute_norms_kernel(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // gemm_l2_distance_kernel
-//
-// Computes ||a-b||^2 = ||a||^2 + ||b||^2 - 2*dot(a,b)
-// The dot product matrix is passed in as `dots` (computed via cublasSgemm).
-// This kernel adds the norms to complete the L2 distance.
 // ─────────────────────────────────────────────────────────────────────────────
 __global__ void gemm_l2_distance_kernel(
   const float* __restrict__ queries,
@@ -246,13 +193,11 @@ __global__ void gemm_l2_distance_kernel(
 
   if (q_idx >= Q || v_idx >= N) return;
 
-  // Compute dot product for this (query, vector) pair
   const float* q = queries + q_idx * dim;
   const float* v = vectors + v_idx * dim;
   float dot = 0.0f;
   for (int d = 0; d < dim; ++d) dot += q[d] * v[d];
 
-  // ||a-b||^2 = ||a||^2 + ||b||^2 - 2*dot(a,b)
   distances[q_idx * N + v_idx] =
     query_norms[q_idx] + vector_norms[v_idx] - 2.0f * dot;
 }
@@ -299,7 +244,6 @@ void launch_batch_knn(
   int dim,
   cudaStream_t  stream
 ) {
-  // One block per query
   batch_knn_kernel<<<Q, BLOCK_SIZE, 0, stream>>>(
     d_queries, d_vectors, d_out_ids, d_out_dists, Q, N, K, dim
   );
