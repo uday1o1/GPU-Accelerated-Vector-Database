@@ -47,12 +47,13 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 # ── Compiler flags ───────────────────────────────────────────────────────────
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   add_compile_options(-Wall -Wextra -O2)
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)   
 endif()
 
 if(CUDA_AVAILABLE)
   add_compile_definitions(CUDA_ENABLED)
   # Target Turing (T4 = sm_75) and Ampere (A100 = sm_80) for Colab
-  set(CMAKE_CUDA_ARCHITECTURES "75;80")
+  set(CMAKE_CUDA_ARCHITECTURES "75;80;90")
 endif()
 
 # ── Subdirectories ───────────────────────────────────────────────────────────
