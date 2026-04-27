@@ -1,6 +1,7 @@
 # ── Core library (CPU, always built) ────────────────────────────────────────
 add_library(vectordb_core STATIC
   core/VectorStore.cpp
+  index/HNSWIndex.cpp
 )
 target_include_directories(vectordb_core PUBLIC
   ${CMAKE_SOURCE_DIR}/include

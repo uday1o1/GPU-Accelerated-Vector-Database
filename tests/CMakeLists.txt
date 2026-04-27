@@ -1,6 +1,6 @@
 enable_testing()
 
-# ── CPU tests (always built) ─────────────────────────────────────────────────
+# ── CPU VectorStore tests ─────────────────────────────────────────────────────
 add_executable(test_vectorstore
   test_vectorstore.cpp
 )
@@ -9,6 +9,15 @@ target_link_libraries(test_vectorstore
 )
 include(GoogleTest)
 gtest_discover_tests(test_vectorstore DISCOVERY_TIMEOUT 30)
+
+# ── HNSW index tests ──────────────────────────────────────────────────────────
+add_executable(test_hnsw
+  test_hnsw.cpp
+)
+target_link_libraries(test_hnsw
+  PRIVATE vectordb_core GTest::gtest_main
+)
+gtest_discover_tests(test_hnsw DISCOVERY_TIMEOUT 30)
 
 # ── GPU kernel tests ──────────────────────────────────────────────────────────
 add_executable(test_gpu_kernels
