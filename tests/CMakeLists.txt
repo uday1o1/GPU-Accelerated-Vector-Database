@@ -15,6 +15,9 @@ add_executable(test_gpu_kernels
   test_gpu_kernels.cpp
 )
 if(CUDA_AVAILABLE)
+  target_include_directories(test_gpu_kernels PRIVATE
+    ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
+  )
   target_link_libraries(test_gpu_kernels
     PRIVATE vectordb_core vectordb_cuda GTest::gtest_main
   )
