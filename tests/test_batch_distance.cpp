@@ -12,9 +12,6 @@
 #include "cuda/kernels/distance_kernels.cuh"
 #endif
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CPU reference implementations
-// ─────────────────────────────────────────────────────────────────────────────
 static float cpu_l2_sq(const float* a, const float* b, int dim) {
   float s = 0;
   for (int i = 0; i < dim; ++i) { float d = a[i]-b[i]; s += d*d; }
@@ -38,9 +35,6 @@ static std::vector<float> rand_vecs(int N, int dim, int seed=42) {
   return v;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CPU-only sanity tests (always run)
-// ─────────────────────────────────────────────────────────────────────────────
 TEST(BatchDistanceTest, CpuL2ReferenceCorrect) {
   float a[] = {1.0f, 0.0f, 0.0f};
   float b[] = {0.0f, 1.0f, 0.0f};
@@ -62,9 +56,6 @@ TEST(BatchDistanceTest, CpuL2SortOrderCorrect) {
   EXPECT_LT(cpu_l2_sq(query, near, 2), cpu_l2_sq(query, far, 2));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GPU tiled kernel tests (Colab only)
-// ─────────────────────────────────────────────────────────────────────────────
 #ifdef CUDA_ENABLED
 
 class TiledKernelTest : public ::testing::Test {
@@ -76,15 +67,12 @@ protected:
   void SetUp() override {
     h_query   = rand_vecs(1, DIM, 1);
     h_vectors = rand_vecs(N, DIM, 2);
-
     cudaMalloc(&d_query,     DIM * sizeof(__half));
     cudaMalloc(&d_vectors,   N * DIM * sizeof(__half));
     cudaMalloc(&d_distances, N * sizeof(float));
     cudaMalloc(&d_fp32_tmp,  N * DIM * sizeof(float));
-
     cudaMemcpy(d_fp32_tmp, h_query.data(), DIM*sizeof(float), cudaMemcpyHostToDevice);
     vectordb::cuda::launch_fp32_to_fp16(d_fp32_tmp, d_query, DIM);
-
     cudaMemcpy(d_fp32_tmp, h_vectors.data(), N*DIM*sizeof(float), cudaMemcpyHostToDevice);
     vectordb::cuda::launch_fp32_to_fp16(d_fp32_tmp, d_vectors, N*DIM);
     cudaDeviceSynchronize();
@@ -107,56 +95,46 @@ protected:
 TEST_F(TiledKernelTest, TiledL2MatchesCpuBaseline) {
   vectordb::cuda::launch_tiled_l2_distance(d_query, d_vectors, d_distances, N, DIM);
   cudaDeviceSynchronize();
-
   std::vector<float> h_gpu(N);
   cudaMemcpy(h_gpu.data(), d_distances, N*sizeof(float), cudaMemcpyDeviceToHost);
-
   const float* q = h_query.data();
   for (int i = 0; i < 100; ++i) {
     float cpu_dist = cpu_l2_sq(q, h_vectors.data() + i*DIM, DIM);
-    float tol = FP16_TOL * (cpu_dist + 1.0f);
-    EXPECT_NEAR(h_gpu[i], cpu_dist, tol) << "L2 mismatch at vector " << i;
+    EXPECT_NEAR(h_gpu[i], cpu_dist, FP16_TOL * (cpu_dist + 1.0f))
+      << "L2 mismatch at vector " << i;
   }
 }
 
 TEST_F(TiledKernelTest, TiledCosineMatchesCpuBaseline) {
   vectordb::cuda::launch_tiled_cosine_distance(d_query, d_vectors, d_distances, N, DIM);
   cudaDeviceSynchronize();
-
   std::vector<float> h_gpu(N);
   cudaMemcpy(h_gpu.data(), d_distances, N*sizeof(float), cudaMemcpyDeviceToHost);
-
   const float* q = h_query.data();
   for (int i = 0; i < 100; ++i) {
     float cpu_dist = cpu_cosine(q, h_vectors.data() + i*DIM, DIM);
-    EXPECT_NEAR(h_gpu[i], cpu_dist, FP16_TOL) << "Cosine mismatch at vector " << i;
+    EXPECT_NEAR(h_gpu[i], cpu_dist, FP16_TOL)
+      << "Cosine mismatch at vector " << i;
   }
 }
 
 TEST_F(TiledKernelTest, TiledL2PreservesRanking) {
   vectordb::cuda::launch_tiled_l2_distance(d_query, d_vectors, d_distances, N, DIM);
   cudaDeviceSynchronize();
-
   std::vector<float> h_gpu(N);
   cudaMemcpy(h_gpu.data(), d_distances, N*sizeof(float), cudaMemcpyDeviceToHost);
-
   const float* q = h_query.data();
-
   std::vector<int> cpu_order(N);
   std::iota(cpu_order.begin(), cpu_order.end(), 0);
   std::sort(cpu_order.begin(), cpu_order.end(), [&](int a, int b) {
-    return cpu_l2_sq(q, h_vectors.data()+a*DIM, DIM) 
-           cpu_l2_sq(q, h_vectors.data()+b*DIM, DIM);
+    return cpu_l2_sq(q, h_vectors.data()+a*DIM, DIM) < cpu_l2_sq(q, h_vectors.data()+b*DIM, DIM);
   });
-
   std::vector<int> gpu_order(N);
   std::iota(gpu_order.begin(), gpu_order.end(), 0);
   std::sort(gpu_order.begin(), gpu_order.end(), [&](int a, int b) {
     return h_gpu[a] < h_gpu[b];
   });
-
   EXPECT_EQ(cpu_order[0], gpu_order[0]) << "Top-1 ranking mismatch";
-
   std::vector<int> cpu_top10(cpu_order.begin(), cpu_order.begin()+10);
   std::vector<int> gpu_top10(gpu_order.begin(), gpu_order.begin()+10);
   int matches = 0;
@@ -169,15 +147,12 @@ TEST_F(TiledKernelTest, TiledL2PreservesRanking) {
 
 TEST_F(TiledKernelTest, TiledVsBasicKernelAgreement) {
   std::vector<float> tiled_dists(N), basic_dists(N);
-
   vectordb::cuda::launch_tiled_l2_distance(d_query, d_vectors, d_distances, N, DIM);
   cudaDeviceSynchronize();
   cudaMemcpy(tiled_dists.data(), d_distances, N*sizeof(float), cudaMemcpyDeviceToHost);
-
   vectordb::cuda::launch_l2_distance(d_query, d_vectors, d_distances, N, DIM);
   cudaDeviceSynchronize();
   cudaMemcpy(basic_dists.data(), d_distances, N*sizeof(float), cudaMemcpyDeviceToHost);
-
   for (int i = 0; i < N; ++i) {
     EXPECT_NEAR(tiled_dists[i], basic_dists[i], 1e-3f)
       << "Tiled vs basic mismatch at vector " << i;
