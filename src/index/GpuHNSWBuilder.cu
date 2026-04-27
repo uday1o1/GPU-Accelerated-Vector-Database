@@ -113,12 +113,10 @@ std::vector<float> GpuHNSWBuilder::compute_distances(
   return h_distances;
 }
 
-HNSWIndex GpuHNSWBuilder::build(const std::vector<Vector>& vectors) {
-  HNSWIndex idx(config_, dim_, metric_);
+void GpuHNSWBuilder::build(HNSWIndex& idx, const std::vector<Vector>& vectors) {
   for (const auto& v : vectors) {
     add(idx, v);
   }
-  return std::move(idx);
 }
 
 NodeId GpuHNSWBuilder::add(HNSWIndex& idx, const Vector& vec) {
@@ -128,7 +126,6 @@ NodeId GpuHNSWBuilder::add(HNSWIndex& idx, const Vector& vec) {
 
   size_t current_size = idx.size();
 
-  // Use CPU path for first few inserts
   if (current_size < 32) {
     return idx.add(vec);
   }
@@ -137,7 +134,6 @@ NodeId GpuHNSWBuilder::add(HNSWIndex& idx, const Vector& vec) {
   upload_vector(vec, current_size);
   compute_distances(vec, current_size);
 
-  // Graph logic remains on CPU — GPU distances used in Phase 3b
   return idx.add(vec);
 }
 

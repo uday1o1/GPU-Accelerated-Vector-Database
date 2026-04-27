@@ -35,8 +35,7 @@ public:
 
   // Build index from a batch of vectors
   // Returns the built HNSWIndex (CPU index with GPU-accelerated construction)
-  HNSWIndex build(const std::vector<Vector>& vectors);
-
+  void build(HNSWIndex& idx, const std::vector<Vector>& vectors);
   // Add a single vector (incremental build)
   NodeId add(HNSWIndex& idx, const Vector& vec);
 
