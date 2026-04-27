@@ -1,7 +1,3 @@
-// test_batch_distance.cpp
-// Tests for shared memory tiled distance kernels.
-// CPU baseline tests always run. GPU tests run on Colab.
-
 #include <gtest/gtest.h>
 #include <vector>
 #include <random>
@@ -55,12 +51,11 @@ TEST(BatchDistanceTest, CpuL2ReferenceCorrect) {
 TEST(BatchDistanceTest, CpuCosineReferenceCorrect) {
   float a[] = {1.0f, 0.0f};
   float b[] = {0.0f, 1.0f};
-  EXPECT_NEAR(cpu_cosine(a, b, 2), 1.0f, 1e-6f);  // orthogonal
-  EXPECT_NEAR(cpu_cosine(a, a, 2), 0.0f, 1e-6f);  // identical
+  EXPECT_NEAR(cpu_cosine(a, b, 2), 1.0f, 1e-6f);
+  EXPECT_NEAR(cpu_cosine(a, a, 2), 0.0f, 1e-6f);
 }
 
 TEST(BatchDistanceTest, CpuL2SortOrderCorrect) {
-  // Verify distances sort correctly — closer vectors have smaller L2
   float query[] = {0.5f, 0.5f};
   float near[]  = {0.6f, 0.6f};
   float far[]   = {9.0f, 9.0f};
@@ -76,23 +71,20 @@ class TiledKernelTest : public ::testing::Test {
 protected:
   static constexpr int DIM = 128;
   static constexpr int N   = 10000;
-  static constexpr float FP16_TOL = 0.02f;  // FP16 rounding tolerance
+  static constexpr float FP16_TOL = 0.02f;
 
   void SetUp() override {
-    h_query   = rand_vecs(1,   DIM, 1);
-    h_vectors = rand_vecs(N,   DIM, 2);
+    h_query   = rand_vecs(1, DIM, 1);
+    h_vectors = rand_vecs(N, DIM, 2);
 
-    // Allocate and upload to device as FP16
     cudaMalloc(&d_query,     DIM * sizeof(__half));
     cudaMalloc(&d_vectors,   N * DIM * sizeof(__half));
     cudaMalloc(&d_distances, N * sizeof(float));
-    cudaMalloc(&d_fp32_tmp,  std::max(N, 1) * DIM * sizeof(float));
+    cudaMalloc(&d_fp32_tmp,  N * DIM * sizeof(float));
 
-    // Convert query to FP16
     cudaMemcpy(d_fp32_tmp, h_query.data(), DIM*sizeof(float), cudaMemcpyHostToDevice);
     vectordb::cuda::launch_fp32_to_fp16(d_fp32_tmp, d_query, DIM);
 
-    // Convert vectors to FP16
     cudaMemcpy(d_fp32_tmp, h_vectors.data(), N*DIM*sizeof(float), cudaMemcpyHostToDevice);
     vectordb::cuda::launch_fp32_to_fp16(d_fp32_tmp, d_vectors, N*DIM);
     cudaDeviceSynchronize();
@@ -119,13 +111,11 @@ TEST_F(TiledKernelTest, TiledL2MatchesCpuBaseline) {
   std::vector<float> h_gpu(N);
   cudaMemcpy(h_gpu.data(), d_distances, N*sizeof(float), cudaMemcpyDeviceToHost);
 
-  // Check first 100 vectors against CPU reference
   const float* q = h_query.data();
   for (int i = 0; i < 100; ++i) {
     float cpu_dist = cpu_l2_sq(q, h_vectors.data() + i*DIM, DIM);
     float tol = FP16_TOL * (cpu_dist + 1.0f);
-    EXPECT_NEAR(h_gpu[i], cpu_dist, tol)
-      << "L2 mismatch at vector " << i;
+    EXPECT_NEAR(h_gpu[i], cpu_dist, tol) << "L2 mismatch at vector " << i;
   }
 }
 
@@ -139,21 +129,19 @@ TEST_F(TiledKernelTest, TiledCosineMatchesCpuBaseline) {
   const float* q = h_query.data();
   for (int i = 0; i < 100; ++i) {
     float cpu_dist = cpu_cosine(q, h_vectors.data() + i*DIM, DIM);
-    EXPECT_NEAR(h_gpu[i], cpu_dist, FP16_TOL)
-      << "Cosine mismatch at vector " << i;
+    EXPECT_NEAR(h_gpu[i], cpu_dist, FP16_TOL) << "Cosine mismatch at vector " << i;
   }
 }
 
 TEST_F(TiledKernelTest, TiledL2PreservesRanking) {
-  // Top-10 from tiled kernel should match top-10 from CPU
   vectordb::cuda::launch_tiled_l2_distance(d_query, d_vectors, d_distances, N, DIM);
   cudaDeviceSynchronize();
 
   std::vector<float> h_gpu(N);
   cudaMemcpy(h_gpu.data(), d_distances, N*sizeof(float), cudaMemcpyDeviceToHost);
 
-  // CPU top-10
   const float* q = h_query.data();
+
   std::vector<int> cpu_order(N);
   std::iota(cpu_order.begin(), cpu_order.end(), 0);
   std::sort(cpu_order.begin(), cpu_order.end(), [&](int a, int b) {
@@ -161,18 +149,14 @@ TEST_F(TiledKernelTest, TiledL2PreservesRanking) {
            cpu_l2_sq(q, h_vectors.data()+b*DIM, DIM);
   });
 
-  // GPU top-10
   std::vector<int> gpu_order(N);
   std::iota(gpu_order.begin(), gpu_order.end(), 0);
   std::sort(gpu_order.begin(), gpu_order.end(), [&](int a, int b) {
     return h_gpu[a] < h_gpu[b];
   });
 
-  // Top-1 must agree
-  EXPECT_EQ(cpu_order[0], gpu_order[0])
-    << "Top-1 ranking mismatch";
+  EXPECT_EQ(cpu_order[0], gpu_order[0]) << "Top-1 ranking mismatch";
 
-  // At least 8/10 of top-10 must match (FP16 may cause minor reordering)
   std::vector<int> cpu_top10(cpu_order.begin(), cpu_order.begin()+10);
   std::vector<int> gpu_top10(gpu_order.begin(), gpu_order.begin()+10);
   int matches = 0;
@@ -184,7 +168,6 @@ TEST_F(TiledKernelTest, TiledL2PreservesRanking) {
 }
 
 TEST_F(TiledKernelTest, TiledVsBasicKernelAgreement) {
-  // Tiled kernel should match the Phase 1b basic kernel
   std::vector<float> tiled_dists(N), basic_dists(N);
 
   vectordb::cuda::launch_tiled_l2_distance(d_query, d_vectors, d_distances, N, DIM);
