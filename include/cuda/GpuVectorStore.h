@@ -2,9 +2,9 @@
 
 #ifdef CUDA_ENABLED
 
-#include "core/VectorStore.h"
-#include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#include "core/VectorStore.h"
 
 namespace vectordb {
 namespace cuda {
