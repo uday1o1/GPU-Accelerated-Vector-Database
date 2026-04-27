@@ -36,3 +36,21 @@ else()
   )
 endif()
 gtest_discover_tests(test_gpu_kernels DISCOVERY_TIMEOUT 30)
+
+# ── Batch distance kernel tests ───────────────────────────────────────────────
+add_executable(test_batch_distance
+  test_batch_distance.cpp
+)
+if(CUDA_AVAILABLE)
+  target_include_directories(test_batch_distance PRIVATE
+    ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
+  )
+  target_link_libraries(test_batch_distance
+    PRIVATE vectordb_core vectordb_cuda GTest::gtest_main
+  )
+else()
+  target_link_libraries(test_batch_distance
+    PRIVATE vectordb_core GTest::gtest_main
+  )
+endif()
+gtest_discover_tests(test_batch_distance DISCOVERY_TIMEOUT 30)

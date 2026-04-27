@@ -11,7 +11,9 @@ target_include_directories(vectordb_core PUBLIC
 if(CUDA_AVAILABLE)
   add_library(vectordb_cuda STATIC
     cuda/kernels/distance_kernels.cu
+    cuda/kernels/batch_distance.cu
     cuda/GpuVectorStore.cu
+    index/GpuHNSWBuilder.cu
   )
   target_include_directories(vectordb_cuda PUBLIC
     ${CMAKE_SOURCE_DIR}/include
