@@ -1,0 +1,26 @@
+enable_testing()
+
+# ── CPU tests (always built) ─────────────────────────────────────────────────
+add_executable(test_vectorstore
+  test_vectorstore.cpp
+)
+target_link_libraries(test_vectorstore
+  PRIVATE vectordb_core GTest::gtest_main
+)
+include(GoogleTest)
+gtest_discover_tests(test_vectorstore DISCOVERY_TIMEOUT 30)
+
+# ── GPU kernel tests ──────────────────────────────────────────────────────────
+add_executable(test_gpu_kernels
+  test_gpu_kernels.cpp
+)
+if(CUDA_AVAILABLE)
+  target_link_libraries(test_gpu_kernels
+    PRIVATE vectordb_core vectordb_cuda GTest::gtest_main
+  )
+else()
+  target_link_libraries(test_gpu_kernels
+    PRIVATE vectordb_core GTest::gtest_main
+  )
+endif()
+gtest_discover_tests(test_gpu_kernels DISCOVERY_TIMEOUT 30)
